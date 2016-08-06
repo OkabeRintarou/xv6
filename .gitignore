@@ -1,0 +1,5 @@
+obj/
+*.swp
+*.pyc
+*.swo
+jos.out
