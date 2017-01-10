@@ -49,9 +49,9 @@ endif
 
 # try to infer the correct QEMU
 ifndef QEMU
-QEMU := $(shell if which qemu > /dev/null; \
+QEMU := $(shell if which qemu > /dev/null 2>&1;\
 	then echo qemu; exit; \
-        elif which qemu-system-i386 > /dev/null; \
+        elif which qemu-system-i386 > /dev/null 2>&1;\
         then echo qemu-system-i386; exit; \
 	else \
 	qemu=/Applications/Q.app/Contents/MacOS/i386-softmmu.app/Contents/MacOS/i386-softmmu; \
@@ -85,6 +85,8 @@ PERL	:= perl
 # Only optimize to -O1 to discourage inlining, which complicates backtraces.
 CFLAGS := $(CFLAGS) $(DEFS) $(LABDEFS) -O1 -fno-builtin -I$(TOP) -MD
 CFLAGS += -fno-omit-frame-pointer
+CFLAGS += -std=gnu99
+CFLAGS += -static
 CFLAGS += -Wall -Wno-format -Wno-unused -Werror -gstabs -m32
 # -fno-tree-ch prevented gcc from sometimes reordering read_ebp() before
 # mon_backtrace()'s function prologue on gcc version: (Debian 4.7.2-5) 4.7.2
@@ -135,9 +137,12 @@ $(OBJDIR)/.vars.%: FORCE
 # Include Makefrags for subdirectories
 include boot/Makefrag
 include kern/Makefrag
+include lib/Makefrag
+include user/Makefrag
 
 
-QEMUOPTS = -hda $(OBJDIR)/kern/kernel.img -serial mon:stdio -gdb tcp::$(GDBPORT)
+#QEMUOPTS = -hda $(OBJDIR)/kern/kernel.img -serial mon:stdio -gdb tcp::$(GDBPORT)
+QEMUOPTS = -drive file=$(OBJDIR)/kern/kernel.img,index=0,media=disk,format=raw -serial mon:stdio -gdb tcp::$(GDBPORT)
 QEMUOPTS += $(shell if $(QEMU) -nographic -help | grep -q '^-D '; then echo '-D qemu.log'; fi)
 IMAGES = $(OBJDIR)/kern/kernel.img
 QEMUOPTS += $(QEMUEXTRA)
@@ -146,7 +151,7 @@ QEMUOPTS += $(QEMUEXTRA)
 	sed "s/localhost:1234/localhost:$(GDBPORT)/" < $^ > $@
 
 gdb:
-	gdb -x .gdbinit
+	gdb -n -x .gdbinit
 
 pre-qemu: .gdbinit
 
@@ -220,7 +225,9 @@ git-handin: handin-check
 WEBSUB = https://ccutler.scripts.mit.edu/6.828/handin.py
 
 handin: tarball-pref myapi.key
-	@curl -f -F file=@lab$(LAB)-handin.tar.gz -F key=\<myapi.key $(WEBSUB)/upload \
+	@SUF=$(LAB); \
+	test -f .suf && SUF=`cat .suf`; \
+	curl -f -F file=@lab$$SUF-handin.tar.gz -F key=\<myapi.key $(WEBSUB)/upload \
 	    > /dev/null || { \
 		echo ; \
 		echo Submit seems to have failed.; \
@@ -252,7 +259,21 @@ tarball: handin-check
 	git archive --format=tar HEAD | gzip > lab$(LAB)-handin.tar.gz
 
 tarball-pref: handin-check
-	git archive --prefix=lab$(LAB)/ --format=tar HEAD | gzip > lab$(LAB)-handin.tar.gz
+	@SUF=$(LAB); \
+	if test $(LAB) -eq 3 -o $(LAB) -eq 4; then \
+		read -p "Which part would you like to submit? [a, b, c (lab 4 only)]" p; \
+		if test "$$p" != a -a "$$p" != b; then \
+			if test ! $(LAB) -eq 4 -o ! "$$p" = c; then \
+				echo "Bad part \"$$p\""; \
+				exit 1; \
+			fi; \
+		fi; \
+		SUF="$(LAB)$$p"; \
+		echo $$SUF > .suf; \
+	else \
+		rm -f .suf; \
+	fi; \
+	git archive --prefix=lab$(LAB)/ --format=tar HEAD | gzip > lab$$SUF-handin.tar.gz
 
 myapi.key:
 	@echo Get an API key for yourself by visiting $(WEBSUB)
@@ -275,6 +296,22 @@ myapi.key:
 handin-prep:
 	@./handin-prep
 
+# For test runs
+
+prep-%:
+	$(V)$(MAKE) "INIT_CFLAGS=${INIT_CFLAGS} -DTEST=`case $* in *_*) echo $*;; *) echo user_$*;; esac`" $(IMAGES)
+
+run-%-nox-gdb: prep-% pre-qemu
+	$(QEMU) -nographic $(QEMUOPTS) -S
+
+run-%-gdb: prep-% pre-qemu
+	$(QEMU) $(QEMUOPTS) -S
+
+run-%-nox: prep-% pre-qemu
+	$(QEMU) -nographic $(QEMUOPTS)
+
+run-%: prep-% pre-qemu
+	$(QEMU) $(QEMUOPTS)
 
 # This magic automatically generates makefile dependencies
 # for header files included from C source files we compile,
